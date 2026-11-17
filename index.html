@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Bubble Monsters</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+html,body{margin:0;height:100%;background:#050512;overflow:hidden;font-family:Arial,Helvetica,sans-serif;color:#fff;user-select:none}
+#stage{position:absolute;left:50%;top:50%;width:960px;height:640px;transform-origin:center;background:#000}
+canvas{position:absolute;inset:0;width:960px;height:640px}
+.screen{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;background:rgba(5,8,30,.55)}
+.screen.on{display:flex}
+#title{background:radial-gradient(ellipse at 50% 30%,rgba(60,120,255,.12),rgba(4,6,24,.5))}
+#title .menu button{background:rgba(20,30,80,.8)}
+.logo{font:italic bold 86px Georgia,'Segoe Script',serif;background:linear-gradient(90deg,#7dff8a,#7ad8ff,#7ab4ff,#b87cff);-webkit-background-clip:text;color:transparent;margin:0;padding:0 14px 6px;letter-spacing:3px;filter:drop-shadow(0 0 18px rgba(90,160,255,.55)) drop-shadow(0 4px 6px rgba(0,0,40,.9));animation:bob 3.2s ease-in-out infinite}
+@keyframes bob{50%{transform:translateY(-6px)}}
+.rule{width:360px;height:3px;border-radius:2px;margin:6px 0 30px;background:linear-gradient(90deg,transparent,#7ad8ff,#b87cff,transparent);opacity:.8}
+.sub{color:#9cd;font-size:14px;margin-bottom:22px}
+.menu button,.dlg button,.opt button{display:block;width:300px;margin:7px auto;padding:10px;font:italic bold 24px Georgia,serif;color:#fff;background:rgba(20,30,80,.85);border:2px solid #4a7ae0;border-radius:24px;cursor:pointer}
+.menu button{transition:transform .12s,background .12s}.menu button:hover{transform:scale(1.05)}
+.menu button:hover,.dlg button:hover,.opt button:hover{background:#2c4ab8;color:#fff58a}
+.menu button:nth-child(1){color:#7dff8a}.menu button:nth-child(2){color:#7ab4ff}.menu button:nth-child(3){color:#ff9ae0}.menu button:nth-child(4){color:#ffe45a}
+.dlg{background:#0b1230;border:3px solid #5a8af0;border-radius:18px;padding:22px 34px;min-width:380px;max-width:520px}
+.dlg h2,.opt h2,.rules h2{margin:0 0 12px;font:italic bold 38px Georgia,serif;color:#ffe45a;text-align:center}
+.dlg p{margin:4px 0;font-size:16px;text-align:center}
+.opt{width:560px}.rules{width:640px;font-size:15px;line-height:1.5}.rules b{color:#ffe45a}
+.row{display:flex;justify-content:space-between;align-items:center;margin:9px 0;font-size:17px}
+.back{width:190px!important;margin-top:18px!important}
+#oncode{font:bold 64px 'Courier New',monospace;letter-spacing:12px;color:#ffe45a;text-align:center;min-height:76px;line-height:76px;text-shadow:0 0 14px #5a8aff}
+.joinrow{display:flex;justify-content:center;align-items:center;gap:10px;margin:10px 0}
+.joinrow button{width:120px!important;margin:0!important}
+#onin{width:150px;padding:10px;font:bold 30px 'Courier New',monospace;letter-spacing:8px;text-align:center;text-transform:uppercase;background:#0b1230;color:#fff;border:2px solid #4a7ae0;border-radius:12px}
+#onstatus{min-height:44px;text-align:center;color:#9fd;font-size:15px;margin:6px 0}
+kbd{background:#1c2a66;border:1px solid #4a7ae0;border-radius:4px;padding:1px 6px;font-size:13px}
+</style></head><body>
+<div id="stage">
+ <canvas id="cv" width="960" height="640"></canvas>
+ <div id="title" class="screen on"><div class="logo">Bubble Monsters</div><div class="rule"></div>
+  <div class="menu"><button data-m="solo">Play Solo</button><button data-m="local2">Two Players (local)</button><button data-m="online">Play Online</button><button data-m="rules">How to Play</button></div>
+  <div class="sub" style="margin-top:18px" id="hi"></div></div>
+ <div id="online" class="screen"><div class="opt"><h2>Play Online</h2>
+  <p style="text-align:center;font-size:15px;line-height:1.45;margin:0 0 14px;color:#bcd">Co-op against the monsters. One of you hosts and shares the 4-letter code, the other joins with it. You play the green monster, your friend plays the blue one.</p>
+  <button id="onhost">Host a game</button>
+  <div id="oncode"></div>
+  <div class="joinrow"><input id="onin" maxlength="4" placeholder="CODE" autocomplete="off" spellcheck="false"><button id="onjoin">Join</button></div>
+  <div id="onstatus"></div>
+  <button class="back" data-m="title">Back</button></div></div>
+ <div id="rules" class="screen"><div class="rules"><h2>How to Play</h2>
+  <p><b>Move</b> <kbd>A</kbd><kbd>D</kbd> / arrows &nbsp; <b>Jump</b> <kbd>W</kbd> / <kbd>Space</kbd> / <kbd>&uarr;</kbd> (hold for a higher jump; press again in mid-air for a double jump, once more for a triple) &nbsp; <b>Blow bubble</b> <kbd>J</kbd> / <kbd>Z</kbd> / <kbd>F</kbd> &nbsp; <b>Bubble shield</b> hold <kbd>K</kbd> / <kbd>X</kbd> / <kbd>S</kbd></p>
+  <p><b>Trap:</b> blow a bubble at a monster to lock it inside. Pop the bubble (touch it from the side or below) to burst the monster into fruit. Leave it too long and it breaks out <b>angry</b>.</p>
+  <p><b>Chain:</b> bursting bubbles that touch each other pops the whole cluster, and every pop in the chain doubles the points.</p>
+  <p><b>Ride:</b> bubbles float up and are solid from above, so land on one and ride it. Hold jump to hop off it with a boost.</p>
+  <p><b>Bounce:</b> glowing fruit (melon, pumpkin, plum) keep bouncing: land on top of one to spring much higher. They pop after three bounces for a bonus. Normal fruit is just points.</p>
+  <p><b>Teleporters:</b> the holes in the floor and ceiling are bubble teleporters. Fall into one and you come out of the other. Some stages also have mid-air teleporter bubble pairs.</p>
+  <p><b>Shield:</b> hold the shield key to wrap yourself in a bubble: enemies bounce off, but it drains and then needs to recharge, and you can't shoot while it's up.</p>
+  <p><b>Drop through:</b> platforms are one-way. To come back down, hold the shield / down key and press jump while standing on one.</p>
+  <p><b>Power orbs</b> (dropped by some monsters, timed): <b>S</b> speed, <b>W</b> wide long-range bubbles, <b>R</b> rapid fire, <b>O</b> full shield + brief invulnerability.</p>
+  <p><b>Bosses</b> arrive every 5th stage. They can't be trapped: hit them with bubbles until their bar is empty. They summon minions and get furious when low. <kbd>P</kbd> pauses, <kbd>M</kbd> mutes the music.</p>
+  <p><b>Hurry:</b> dawdle and the monsters turn angry; keep dawdling and an unstoppable ghost comes for you. Clear all monsters to move on. Online, you play together: the host is green, the guest is blue. Two on one keyboard: green <kbd>A</kbd><kbd>D</kbd><kbd>W</kbd> <kbd>F</kbd> shoot <kbd>G</kbd> shield; blue arrows, <kbd>.</kbd> shoot <kbd>/</kbd> shield.</p>
+  <button class="back" data-m="title" style="margin:12px auto 0">Back</button></div></div>
+ <div id="dialog" class="screen"><div class="dlg"><h2 id="dtitle"></h2><div id="dbody"></div><div id="dbtns" style="margin-top:14px"></div></div></div>
+</div>
+<script src="js/peerjs.min.js"></script>
+<script src="js/net.js"></script>
+<script src="js/art.js"></script>
+<script src="js/levels.js"></script>
+<script src="js/sim.js"></script>
+<script src="js/reach.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/main.js"></script>
+</body></html>

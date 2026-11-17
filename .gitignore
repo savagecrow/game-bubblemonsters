@@ -1,0 +1,33 @@
+# Dependencies / build output
+node_modules/
+dist/
+build/
+
+# Generated screenshots from dev/shot.js and dev/nettest.js
+shots/
+
+# Unused third-party art (not referenced by the game; licence unverified)
+assets/berryface.png
+assets/fruit.png
+assets/fruits_atlas.png
+
+# Raw source art packs and scratch files for tools/*.py
+src_art/
+raw/
+*.psd
+*.tmp
+*.log
+__pycache__/
+*.pyc
+
+# Local env / secrets
+.env
+.env.*
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

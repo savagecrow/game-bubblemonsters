@@ -1,0 +1,42 @@
+{
+ "bubA": {
+  "cell": 96,
+  "cols": 6,
+  "n": 30
+ },
+ "bubB": {
+  "cell": 96,
+  "cols": 6,
+  "n": 30
+ },
+ "bubC": {
+  "cell": 96,
+  "cols": 6,
+  "n": 30
+ },
+ "bubD": {
+  "cell": 96,
+  "cols": 6,
+  "n": 30
+ },
+ "popA": {
+  "cell": 128,
+  "cols": 6,
+  "n": 12
+ },
+ "popB": {
+  "cell": 128,
+  "cols": 6,
+  "n": 12
+ },
+ "popC": {
+  "cell": 128,
+  "cols": 6,
+  "n": 12
+ },
+ "fruit": {
+  "cell": 96,
+  "cols": 4,
+  "n": 16
+ }
+}
