@@ -28,7 +28,22 @@ const APP = (() => {
   // ---------------------------------------------------------------- state
   let sim = null, mode = null;                   // mode: null | 'solo' | 'local2' | 'host' | 'guest'
   let acc = 0, last = performance.now(), overShown = false;
-  let guestIn = 0, snapPrev = null, snapCur = null, evQueue = [], lastSent = 0, sendTick = 0;
+  let snapCur = null, evQueue = [], sendTick = 0;
+  // ---- online state. sess tags every fast packet so stragglers from a previous round are ignored.
+  const STEP = 1000 / 60;
+  let sess = 0;
+  // host side: guest inputs arrive numbered; the host consumes them in order (one per step) and acks the last one used
+  let inQ = [], inRecv = 0, ackSeq = 0, gLast = 0, lastInAt = 0, lastPt = 0, evLog = [], evId = 0, snapSeq = 0;
+  // guest side: jitter buffer of snapshots + clock estimate, own-dragon prediction history
+  let snaps = [], lastQ = -1, lastEvId = 0, clkBase = Infinity, jit = 0, delayCur = 100, rtt = 0, lastSnapAt = 0, pendingRecon = null, pseq = 0, lastPktAt = 0;
+  const INHIST = new Array(256).fill(0), MH = new Array(256).fill(null);
+  let ox = 0, oy = 0;                       // visual error offset that eases out after a correction
+  function resetNet() {
+    snapCur = null; snaps = []; evQueue = []; sendTick = 0;
+    inQ = []; inRecv = 0; ackSeq = 0; gLast = 0; lastInAt = performance.now(); lastPt = 0; evLog = []; evId = 0; snapSeq = 0;
+    lastQ = -1; lastEvId = 0; clkBase = Infinity; jit = 0; delayCur = 100; rtt = 0; lastSnapAt = performance.now(); pendingRecon = null; pseq = 0; lastPktAt = 0;
+    INHIST.fill(0); MH.fill(null); ox = oy = 0;
+  }
   const fx = [], texts = [];
   const app = { get sim() { return sim; }, get mode() { return mode; }, keys, fx };
   window.__bb = app;
@@ -48,7 +63,7 @@ const APP = (() => {
 
   app.start = (m, li = 0) => {
     SND.init(); SND.startMusic();
-    mode = m; overShown = false; fx.length = 0; texts.length = 0; snapPrev = snapCur = null; evQueue = []; guestIn = 0; me = null; lastRecon = null;
+    mode = m; overShown = false; fx.length = 0; texts.length = 0; resetNet(); me = null;
     sim = new Sim(li, (Math.random() * 2 ** 31) | 0, m === 'solo' ? 1 : 2);
     if (m === 'guest') { sim.state = 'wait'; }
     for (const el of document.querySelectorAll('.screen')) el.classList.remove('on');
@@ -89,15 +104,40 @@ const APP = (() => {
 
   // ---------------------------------------------------------------- online
   NET.onMsg = m => {
-    if (m.t === 'start') { app.start('guest', m.li); return; }
+    if (m.t === 'start') { app.start('guest', m.li); sess = m.g; return; }
     if (m.t === 'bye') { peerLeft(); return; }
-    if (mode === 'host') { if (m.t === 'in') guestIn = m.m | 0; else if (m.t === 'again') hostStart(); }
-    else if (mode === 'guest' && m.t === 's') {
-      snapPrev = snapCur; snapCur = { s: m.s, at: performance.now() };
-      for (const e of m.ev) evQueue.push(e);
+    if (mode === 'host') {
+      if (m.t === 'in') {
+        if (m.g !== sess) return;
+        lastInAt = performance.now(); lastPt = m.pt;
+        const h = m.h; for (let i = h.length - 1; i >= 0; i--) { const s = m.q - i; if (s > inRecv) { inQ.push({ q: s, m: h[i] | 0 }); inRecv = s; } }   // redundancy: lost packets are recovered from the next one
+      } else if (m.t === 'again') hostStart();
+    } else if (mode === 'guest' && m.t === 's') {
+      if (m.g !== sess || m.q <= lastQ) return;                               // stale / duplicate / out of order: the newest is all we want
+      lastQ = m.q;
+      const at = performance.now(), off = at - m.ts;
+      if (at - lastSnapAt > 1500) { clkBase = Infinity; jit = 0; delayCur = 150; snaps = []; }   // back after an outage: re-learn the clock and jitter from scratch
+      if (off < clkBase) clkBase = off; else clkBase += 0.05;                 // best-case delivery time; creeps up so a permanent route change is followed
+      const ex = off - clkBase; jit = ex > jit ? ex : jit * 0.97 + ex * 0.03; // peak-hold jitter estimate
+      if (m.pe) { const r = at - m.pe; rtt = rtt ? rtt * 0.85 + r * 0.15 : r; }
+      const sn = { q: m.q, ts: m.ts, at, s: m.s, a: m.a | 0 };
+      snaps.push(sn); if (snaps.length > 40) snaps.shift();
+      snapCur = sn; pendingRecon = sn; lastSnapAt = at;
+      for (const x of m.ev) if (x.i > lastEvId) { lastEvId = x.i; evQueue.push(x.e); }   // each event rides in several snapshots; take it once
     }
   };
-  function hostStart() { NET.send({ t: 'start', li: 0 }); app.start('host', 0); }
+  function hostStart() { sess = (Math.random() * 2 ** 30) | 0; NET.send({ t: 'start', li: 0, g: sess }); app.start('host', 0); }
+  // host: next guest input, one numbered input per sim step so the ack the guest predicts against is exact
+  function nextGuestInput() {
+    if (performance.now() - lastInAt > 400) { inQ.length = 0; gLast = 0; return 0; }   // guest went quiet (tab hidden / stalled): let go of every key
+    if (!inQ.length) return gLast;                                                      // packet late: keep doing what they were doing
+    let skipped = 0; while (inQ.length > 3) skipped |= inQ.shift().m;                   // burst arrived: catch up, never lose a tap
+    const it = inQ.shift(); ackSeq = it.q; const m = it.m | (skipped & ~gLast); gLast = it.m; return m;
+  }
+  function sendSnap() {
+    const q = ++snapSeq; evLog = evLog.filter(x => q - x.q <= 8);
+    NET.sendFast({ t: 's', g: sess, q, ts: performance.now(), a: ackSeq, pe: lastPt, s: sim.toState(), ev: evLog });
+  }
   function peerLeft() {
     if (!mode || mode === 'solo' || mode === 'local2') { setOn('Connection closed.'); return; }
     const was = mode; mode = null; sim = null; NET.close();
@@ -109,9 +149,20 @@ const APP = (() => {
     else if (s === 'connected') {
       if (NET.host && !mode) hostStart();
       else if (!NET.host) setOn('Connected! Waiting for the host to start...');
-    } else if (s === 'closed') peerLeft();
-    else if (s === 'error') { if (mode === 'host' || mode === 'guest') peerLeft(); else setOn(info || 'Connection error.'); }
+    } else if (s === 'closed') { if (mode === 'host' || mode === 'guest') return; peerLeft(); }       // mid-game drops are handled by linkWatch (auto re-join); only an explicit 'bye' ends the game
+    else if (s === 'error') { if (mode === 'host' || mode === 'guest') return; setOn(info || 'Connection error.'); }
   };
+  NET.canReplace = () => mode === 'host' && performance.now() - lastInAt > 1200;
+  // Link watchdog: a silently dead WebRTC link never fires 'close', so judge it by traffic. The guest re-dials; the host accepts the new connection.
+  let lastRejoin = 0, lostSince = 0;
+  function linkWatch(now) {
+    const age = mode === 'guest' ? now - lastSnapAt : now - lastInAt;
+    if (age < 1500) { lostSince = 0; return false; }
+    if (!lostSince) lostSince = now;
+    if (mode === 'guest' && now - lastRejoin > 4000) { lastRejoin = now; NET.rejoin(); }
+    if (now - lostSince > 25000) peerLeft();
+    return true;
+  }
 
   // ---------------------------------------------------------------- effects from sim events
   function addFx(sheet, x, y, size, speed = 1) { fx.push({ sheet, x, y, size, t: 0, speed }); }
@@ -266,40 +317,53 @@ const APP = (() => {
     }
     g.textAlign = 'center'; g.fillStyle = '#cfe'; g.strokeStyle = 'rgba(0,0,40,.9)'; g.font = 'italic bold 20px Georgia,serif';
     g.strokeText(sim.level.name, W / 2, 56); g.fillText(sim.level.name, W / 2, 56);
-    if (mode === 'host' || mode === 'guest') { g.font = 'bold 12px Arial'; g.fillStyle = '#9fd'; g.fillText((mode === 'host' ? 'HOST' : 'GUEST') + '  ESC = leave', W / 2, 74); }
+    if (mode === 'host' || mode === 'guest') { g.font = 'bold 12px Arial'; g.fillStyle = '#9fd'; g.fillText((mode === 'host' ? 'HOST' : 'GUEST') + '  ESC = leave' + (mode === 'guest' && rtt ? '   ping ' + Math.round(rtt) + 'ms' + (NET.fastOpen ? '' : ' (relay)') : ''), W / 2, 74); }
   }
 
   // ---------------------------------------------------------------- guest-side prediction of my own dragon
-  // The host stays authoritative. I run my dragon's physics locally (same code) against the host's world so
-  // movement feels instant, and ease back toward the host's position if we drift apart.
-  let me = null, lastRecon = null;
-  const MY = 1;
-  function predictMe(mask) {
-    const raw = snapCur.s.p[MY]; if (!raw) return;
-    const base = sim.players[MY];
-    const fresh = lastRecon !== snapCur;
-    if (!me || raw[10] || me.dead || raw[15] || sim.state === 'over') {            // dead / out / first frame: just follow the host
-      me = Object.assign({ prev: 0, portalCd: 0, apCd: 0, shootCd: 0, coyote: 0, jumpBuf: 0, onB: 0, drop: 0 }, base); lastRecon = snapCur; acc = 0; return;
-    }
-    if (fresh) {
-      lastRecon = snapCur;
-      const dx = raw[0] - me.x, dy = raw[1] - me.y, err = Math.hypot(dx, dy);
-      const idle = !mask && Math.abs(raw[2]) < 0.1;
-      if (err > 110) { me.x = raw[0]; me.y = raw[1]; me.vx = raw[2]; me.vy = raw[3]; }          // teleport / respawn / big divergence
-      else if (idle && err > 0.5) { me.x += dx * 0.3; me.y += dy * 0.3; }                       // settle onto the host's position when stopped
-      else if (err > 40) { me.x += dx * 0.18; me.y += dy * 0.18; }                              // drifted: ease back
-      for (const k of ['lives', 'score', 'energy', 'shCd', 'shield', 'inv', 'dead', 'out', 'buf', 'mouth']) me[k] = base[k];
-    }
-    let guard = 0;
-    while (acc >= 1000 / 60 && guard++ < 6) {
-      acc -= 1000 / 60;
+  // The host stays authoritative. I step my dragon locally (same physics code) against the host's world, numbering every
+  // step. Each snapshot says "I have applied your inputs up to #ack": I rewind to my own state at #ack, overwrite it with
+  // the host's truth, and replay inputs #ack+1..now. If the replay lands where I already am (the normal case) nothing moves;
+  // otherwise the difference is eased out visually instead of rubber-banding.
+  let me = null;
+  const MY = 1, KEEP = ['lives', 'score', 'energy', 'shCd', 'shield', 'inv', 'dead', 'out', 'buf', 'mouth'];
+  const snapMe = () => Object.assign({}, me);
+  function stepMe(mask) {
+    pseq++; INHIST[pseq & 255] = mask;
+    if (me) {
       const wasGround = me.ground;
       sim.stepPlayer(me, mask, true);                                                           // calm=true: the host owns shooting
+      MH[pseq & 255] = snapMe();
+      ox *= 0.82; oy *= 0.82;
       if (wasGround && !me.ground && me.vy < -9) { SND.play('jump'); addFx('popA', me.x + PW / 2, me.y + PH - 2, 26, 1.8); }
+    }
+  }
+  function predictMe() {
+    const raw = snapCur.s.p[MY]; if (!raw) return;
+    const base = sim.players[MY];
+    if (!me || raw[10] || me.dead || raw[15] || sim.state === 'over') {            // dead / out / first frame: just follow the host
+      me = Object.assign({ prev: 0, portalCd: 0, apCd: 0, shootCd: 0, coyote: 0, jumpBuf: 0, onB: 0, drop: 0 }, base); pendingRecon = null; ox = oy = 0;
+      MH.fill(null); MH[pseq & 255] = snapMe(); return;
+    }
+    for (const k of KEEP) me[k] = base[k];
+    if (pendingRecon) {
+      const sn = pendingRecon; pendingRecon = null;
+      const r = sn.s.p[MY], from = MH[sn.a & 255], behind = pseq - sn.a;
+      if (!from || behind < 0 || behind > 200) { me.x = r[0]; me.y = r[1]; me.vx = r[2]; me.vy = r[3]; ox = oy = 0; }
+      else {
+        const t = Object.assign({}, from, { x: r[0], y: r[1], vx: r[2], vy: r[3], ground: !!r[5], face: r[4] });
+        for (const k of KEEP) t[k] = base[k];
+        for (let s = sn.a + 1; s <= pseq; s++) sim.stepPlayer(t, INHIST[s & 255], true);
+        sim.events.length = 0;
+        const dx = t.x - me.x, dy = t.y - me.y, err = Math.hypot(dx, dy);
+        if (err > 100) { ox = oy = 0; }                                             // teleport / respawn / big divergence: snap
+        else if (err > 0.25) { ox -= dx; oy -= dy; }                                // keep what's on screen, ease into the corrected spot
+        Object.assign(me, t);
+      }
     }
     sim.events.length = 0;
     me.anim = base.anim + 0;                                                                    // animation clock from the host keeps both screens in step
-    sim.players[MY] = me;
+    sim.players[MY] = Object.assign({}, me, { x: me.x + ox, y: me.y + oy });
   }
 
   // ---------------------------------------------------------------- loop
@@ -322,23 +386,34 @@ const APP = (() => {
       while (acc >= 1000 / 60) {
         acc -= 1000 / 60;
         const inp = readInputs();
-        if (mode === 'host') inp[1] = guestIn;
+        if (mode === 'host') inp[1] = nextGuestInput();
         sim.step(inp);
         handleEvents(sim.events);
         if (mode === 'host') {
-          for (const e of sim.events) evQueue.push(e);
-          if ((++sendTick & 1) === 0) { NET.send({ t: 's', s: sim.toState(), ev: evQueue }); evQueue = []; }
+          for (const e of sim.events) evLog.push({ i: ++evId, q: snapSeq + 1, e });
+          if ((++sendTick & 1) === 0) sendSnap();
         }
       }
     } else if (sim && mode === 'guest') {
-      acc += dt;
-      const m = readInputs()[0];
-      if (m !== lastSent || now - lastSentAt > 100) { NET.send({ t: 'in', m }); lastSent = m; lastSentAt = now; }
-      if (snapCur) {
-        const span = snapPrev ? Math.max(16, snapCur.at - snapPrev.at) : 1;
-        const f = snapPrev ? Math.min(1, (now - snapCur.at) / span) : 1;
-        sim.fromState(snapCur.s, snapPrev ? snapPrev.s : null, f);
-        predictMe(m);
+      acc = Math.min(acc + dt, 100);
+      let stepped = false, guard = 0;
+      while (acc >= STEP && guard++ < 6) { acc -= STEP; stepMe(readInputs()[0]); stepped = true; }
+      if (stepped || now - lastPktAt > 100) {                    // numbered inputs, newest first, 8 deep: any lost packet is recovered by the next one
+        const h = []; for (let i = 0; i < 8; i++) h.push(INHIST[(pseq - i) & 255]);
+        NET.sendFast({ t: 'in', g: sess, q: pseq, h, pt: now }); lastPktAt = now;
+      }
+      if (snaps.length) {
+        // jitter buffer: draw the world a little in the past, on the host's own clock, so late/bunched packets never show
+        const target = Math.min(320, Math.max(75, 70 + jit * 1.3));
+        delayCur += (target - delayCur) * 0.02;
+        const rt = now - clkBase - delayCur, n = snaps.length;
+        let A = null, B = snaps[n - 1], f = 1;
+        if (rt < B.ts) {
+          if (rt <= snaps[0].ts) B = snaps[0];
+          else for (let i = n - 1; i > 0; i--) if (snaps[i - 1].ts <= rt) { A = snaps[i - 1]; B = snaps[i]; f = Math.min(1, (rt - A.ts) / Math.max(1, B.ts - A.ts)); break; }
+        } else if (n > 1) A = snaps[n - 2];
+        sim.fromState(B.s, A ? A.s : null, f);
+        predictMe();
         if (evQueue.length) {                                  // my own jump sound already played locally
           handleEvents(evQueue.filter(e => !(e.k === 'jump' && e.id === 1))); evQueue = [];
         }
@@ -346,6 +421,11 @@ const APP = (() => {
     }
     if (sim && sim.state !== 'wait' && (mode !== 'guest' || snapCur)) {
       draw(); checkOver();
+      if ((mode === 'host' || mode === 'guest') && linkWatch(now)) {
+        g.fillStyle = 'rgba(0,0,30,.62)'; g.fillRect(0, 0, W, H); g.fillStyle = '#ffd36a'; g.textAlign = 'center'; g.font = 'italic bold 40px Georgia,serif';
+        g.fillText(mode === 'guest' ? 'Connection lost' : 'Your friend dropped', W / 2, H / 2 - 8);
+        g.fillStyle = '#fff'; g.font = '20px Georgia'; g.fillText(mode === 'guest' ? 'Reconnecting' + '...'.slice(0, 1 + ((now / 400) | 0) % 3) : 'Waiting for them to reconnect' + '...'.slice(0, 1 + ((now / 400) | 0) % 3), W / 2, H / 2 + 30);
+      }
       if (app.paused) { g.fillStyle = 'rgba(0,0,30,.55)'; g.fillRect(0, 0, W, H); g.fillStyle = '#fff'; g.textAlign = 'center'; g.font = 'italic bold 64px Georgia,serif'; g.fillText('PAUSED', W / 2, H / 2); g.font = '20px Georgia'; g.fillText('press P to resume', W / 2, H / 2 + 40); }
     }
     else if (sim && mode === 'guest') { g.fillStyle = '#050a28'; g.fillRect(0, 0, W, H); g.fillStyle = '#9cd'; g.font = '24px Georgia'; g.textAlign = 'center'; g.fillText('Waiting for host...', W / 2, H / 2); }

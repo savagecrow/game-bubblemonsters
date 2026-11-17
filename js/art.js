@@ -1,18 +1,20 @@
 // Art: Unity "2D Bubble Animations" sheets + procedurally drawn dragons, tiles and backgrounds.
 const ART = (() => {
   const A = { img: {}, meta: null, ready: false };
-  const names = ['bubA', 'bubB', 'bubC', 'bubD', 'popA', 'popB', 'popC'];
+  // WebP keeps the download small (~0.8 MB for everything). bubC is never drawn; popC is identical to popB, so it just aliases it.
+  const names = ['bubA', 'bubB', 'bubD', 'popA', 'popB'];
 
   A.load = async () => {
     A.meta = await (await fetch('assets/sheets.json')).json();
     await Promise.all(names.map(n => new Promise((res, rej) => {
       const im = new Image(); im.onload = () => { A.img[n] = im; res(); }; im.onerror = () => rej(new Error('missing ' + n));
-      im.src = 'assets/' + n + '.png';
+      im.src = 'assets/' + n + '.webp';
     })));
+    A.img.popC = A.img.popB;
     // player monsters: animated frame atlases (tools/pack_monsters.py), frames pre-shrunk to ~110px tall
     try { A.mon = await (await fetch('assets/mon2.json')).json(); } catch (e) { A.mon = null; }
     if (A.mon) await Promise.all(['green', 'blue'].map(n => new Promise(res => {
-      const im = new Image(); im.onload = () => { A.img['mon2_' + n] = im; res(); }; im.onerror = res; im.src = 'assets/mon2_' + n + '.png';
+      const im = new Image(); im.onload = () => { A.img['mon2_' + n] = im; res(); }; im.onerror = res; im.src = 'assets/mon2_' + n + '.webp';
     })));
     // per-frame body centroid (lower 60% of each cell, so an outstretched arm/horn doesn't drag it) so every frame
     // can be drawn with its body on the same vertical axis - stops the sprite sliding sideways between frames

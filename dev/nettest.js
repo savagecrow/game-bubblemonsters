@@ -56,7 +56,8 @@ async function open(url) {
   console.log('bubbles host/guest:', await A.ev(`window.__bb.sim.bubbles.length`), await B.ev(`window.__bb.sim.bubbles.length`),
     '| enemies host/guest:', await A.ev(`window.__bb.sim.enemies.length`), await B.ev(`window.__bb.sim.enemies.length`));
   // ---- laggy link: 80ms each way (160ms RTT) ----
-  const lag = `(function(){const s=NET.send.bind(NET);NET.send=function(m){setTimeout(function(){s(m)},80)};const o=NET.onMsg;NET.onMsg=function(m){setTimeout(function(){o(m)},0)};return 1})()`;
+  // 80ms each way + 20ms random jitter + 25% loss on the fast channel (the reliable one is left alone, as TCP would hide loss as delay)
+  const lag = `(function(){const s=NET.sendFast.bind(NET);window.__sf=s;NET.sendFast=function(m){if(window.__dead||Math.random()<0.25)return;setTimeout(function(){s(m)},80+Math.random()*20)};return 1})()`;
   await A.ev(lag); await B.ev(lag); await sleep(600);
   const lx0 = await B.ev(`window.__bb.sim.players[1].x`);
   await B.ev(`window.__bb.keys.KeyD=true`); await sleep(70);
@@ -66,6 +67,14 @@ async function open(url) {
   console.log('[160ms RTT] settled:', JSON.stringify(await pos()));
   await B.ev(`window.__bb.keys.Space=true`); await sleep(150); await B.ev(`window.__bb.keys.Space=false`); await sleep(1500);
   console.log('[160ms RTT] after jump settled:', JSON.stringify(await pos()));
+  console.log('[lossy] guest ping/jitter state:', await B.ev(`JSON.stringify({fast:NET.fastOpen})`));
+  await B.shot(path.join(root, 'shots/net_lossy_guest.png'));
+  // ---- blackout: both directions silently dead for 4s (the reported "she freezes on my screen" case) ----
+  await A.ev(`window.__dead=true`); await B.ev(`window.__dead=true`); await B.ev(`window.__bb.keys.KeyD=true`); await sleep(3000);
+  await B.shot(path.join(root, 'shots/net_dead_guest.png')); await A.shot(path.join(root, 'shots/net_dead_host.png'));
+  await A.ev(`window.__dead=false`); await B.ev(`window.__dead=false`); await B.ev(`window.__bb.keys.KeyD=false`); await sleep(6000);
+  const rx = await B.ev(`window.__bb.sim.players[1].x`); await B.ev(`window.__bb.keys.KeyA=true`); await sleep(600); await B.ev(`window.__bb.keys.KeyA=false`); await sleep(1200);
+  console.log('[after blackout] guest x before/after walking left, host view:', rx, await B.ev(`window.__bb.sim.players[1].x`), await A.ev(`window.__bb.sim.players[1].x`));
   await A.shot(path.join(root, 'shots/net_host.png')); await B.shot(path.join(root, 'shots/net_guest.png'));
   console.log('errors host:', A.errs.slice(0, 4), 'guest:', B.errs.slice(0, 4));
   A.close(); B.close();
